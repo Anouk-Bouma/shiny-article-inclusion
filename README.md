@@ -1,9 +1,11 @@
+# About this repository
+This repository is part of the supplementary materials of the following project: https://osf.io/6r2eu/overview
+
 # How to use the Shiny App
 
 To use the Shiny app, please follow the following steps:
 
-1. Read through the Article Selection Protocol file that is contained within the
-project folder to prepare your data.
+1. Read through the Article Selection Protocol file, which can be found here: 
 2. Use the systematic_review_pipeline.qmd file to extract keywords from your 
 datafile and prepare the data further for review
 - This file contains step-by-step instructions on how to prepare your file
