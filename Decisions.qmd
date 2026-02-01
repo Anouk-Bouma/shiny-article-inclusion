@@ -1,0 +1,173 @@
+---
+title: "Decisions"
+author: "Anouk Bouma"
+format: html
+editor: visual
+---
+
+This script is used only for the first stage of the project where the interrater reliability is calculated to evaluate how well the selection protocol works. For the later phases, where coding is done by only one reviewer per article, this script is not used.
+
+## Loading decisions
+
+```{r}
+library(psych)
+library(dplyr)
+library(readxl)
+
+e1 <- readRDS("C://101-200(reviewer1).rds")
+
+e2 <- readRDS("C://101-200(reviewer2).rds")
+
+
+# Creating a function to calculate IRR and list inconclusive papers
+irr <- function(evaluator_data_1, evaluator_data_2) {
+  
+  # create decision variable that notes the decisions per paper for evaluator 1
+  evaluator_data_1 <- evaluator_data_1 %>%
+  mutate(decision = case_when(
+    .[['included']] == TRUE ~ 1,
+    .[['excluded']] == TRUE ~ 0,
+    .[['second_reviewer']] == TRUE ~ 2,
+    TRUE ~ NA_real_
+  ))
+
+  # create decision variable that notes the decisions per paper for evaluator 2
+  evaluator_data_2 <- evaluator_data_2 %>%
+    mutate(decision = case_when(
+      .[['included']] == TRUE ~ 1,
+      .[['excluded']] == TRUE ~ 0,
+      .[['second_reviewer']] == TRUE ~ 2,
+      TRUE ~ NA_real_
+    ))
+
+# counter variables to count how many conclusive and inconclusive choices are made
+same <- 0
+different <- 0
+
+# loop over all papers and check for each one if the choice of e1 and e2 are the same
+  for (i in 1:100) {
+    if (evaluator_data_1[i,'included'] == evaluator_data_2[i, 'included'] & evaluator_data_1[i,'excluded'] == evaluator_data_2[i,'excluded'] & evaluator_data_1[i,'second_reviewer'] == evaluator_data_2[i,'second_reviewer']) {
+      same <- same + 1
+    } else { # if not the same, print the title of the paper and the decisions
+      print(paste0(evaluator_data_1$title[i], 
+        ". INCONCLUSIVE. ", 
+        "evaluator_data_1: ", evaluator_data_1$decision[i], 
+        " evaluator_data_2: ", evaluator_data_2$decision[i], 
+        " note evaluator_1: ", evaluator_data_1$note[i], 
+        " note evaluator_2: ", evaluator_data_2$note[i]))
+      
+      different <- different + 1
+    }
+}
+
+# counter variables to count how many papers are included, excluded, or need to be reviewed
+included <- 0
+excluded <- 0
+reviewer <- 0
+
+# loop over all papers to count the number of included/excluded/reviewer papers
+for (i in 1:100) {
+  if (evaluator_data_1[i, 'included'] == TRUE & evaluator_data_2[i, 'included'] == TRUE) {
+    included <- included + 1
+  } else if (evaluator_data_1[i, 'excluded'] == TRUE & evaluator_data_2[i, 'excluded'] == TRUE) {
+    excluded <- excluded + 1
+  } else if (evaluator_data_1[i, 'second_reviewer'] == TRUE & evaluator_data_2[i, 'second_reviewer'] == TRUE) {
+    reviewer <- reviewer + 1
+  } 
+}
+
+# table of the decisions
+print(table(evaluator_data_1$decision, evaluator_data_2$decision))
+
+# calculate cohens kappa
+cohen.kappa(x=cbind(evaluator_data_1$decision, evaluator_data_2$decision))
+}
+
+# running the function
+irr(e1, e2)
+```
+
+## Excel file of the disagreements
+
+```{r}
+disagree <- function(evaluator_data_1, evaluator_data_2) {
+  library(dplyr)
+
+  # Create decision variables
+  evaluator_data_1 <- evaluator_data_1 %>%
+    mutate(decision = case_when(
+      included == TRUE ~ 1,
+      excluded == TRUE ~ 0,
+      second_reviewer == TRUE ~ 2,
+      TRUE ~ NA_real_
+    ))
+
+  evaluator_data_2 <- evaluator_data_2 %>%
+    mutate(decision = case_when(
+      included == TRUE ~ 1,
+      excluded == TRUE ~ 0,
+      second_reviewer == TRUE ~ 2,
+      TRUE ~ NA_real_
+    ))
+
+  # Create a dataframe to store disagreements
+  disagreements_df <- data.frame(
+    index = integer(),
+    title = character(),
+    decision_e1 = numeric(),
+    decision_e2 = numeric(),
+    note_e1 = character(),
+    note_e2 = character(),
+    stringsAsFactors = FALSE
+  )
+
+  # Loop over all rows and collect disagreements
+  for (i in 1:nrow(evaluator_data_1)) {
+    same_decision <- evaluator_data_1[i, c("included", "excluded", "second_reviewer")] ==
+                     evaluator_data_2[i, c("included", "excluded", "second_reviewer")]
+
+    if (!all(same_decision, na.rm = TRUE)) {
+      disagreements_df <- rbind(disagreements_df, data.frame(
+        index = i,
+        title = evaluator_data_1$title[i],
+        decision_e1 = evaluator_data_1$decision[i],
+        decision_e2 = evaluator_data_2$decision[i],
+        note_e1 = evaluator_data_1$note[i],
+        note_e2 = evaluator_data_2$note[i],
+        stringsAsFactors = FALSE
+      ))
+    }
+  }
+
+  return(disagreements_df)
+}
+disagreements <- disagree(e1, e2)
+#write.csv(disagreements, file = "disagreements.csv", row.names = FALSE)
+```
+
+Combining the results.
+
+```{r}
+# The result will be a dataframe as a copy of e1
+resolved1 <- e1
+
+for (article in 1:nrow(e1)) {
+  if (e1[article,]$included == e2[article,]$included &&
+      e1[article,]$excluded == e2[article,]$excluded &&
+      e1[article,]$second_reviewer != TRUE && 
+      e2[article,]$second_reviewer != TRUE) 
+    { next }
+     else {
+        resolved1[article, c("included", "excluded", "second_reviewer")] <- FALSE
+      }
+}
+
+new_review1 <- filter(resolved1, included == FALSE & excluded == FALSE | second_reviewer == TRUE)
+
+# Van beide groepen de artikelen die opnieuw beoordeeld moeten worden combineren
+review_combined <- rbind(new_review, new_review1)
+
+saveRDS(review_combined, file = "disagreements_for_review.rds")
+```
+
+This object can be used in the shiny app to fill out the empty spaces, then the object can be added to the all_articles file

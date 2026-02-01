@@ -1,0 +1,315 @@
+---
+title: "Systematic_review_pipeline"
+format: html
+editor: visual
+---
+
+## Packages
+
+```{r}
+# Packages
+#| echo: false
+library(pdftools)
+library(stringr)
+library(bib2df)
+library(readxl)
+library(dplyr)
+library(stringr)
+library(tidyverse)
+library(rmarkdown)
+library(writexl)
+```
+
+## Getting pdf text into a dataframe
+
+```{r}
+#| echo: false
+# Define the main folder
+main_folder <- "C:/"
+
+# List all pdf files in subfolders
+pdf_paths <- list.files(main_folder, 
+                        pattern = "\\.pdf$", 
+                        recursive = TRUE, 
+                        full.names = TRUE)
+
+# Extract text and DOI
+df_fulltext <- data.frame(DOI = character(), 
+                          full_text = character(), 
+                          stringsAsFactors = FALSE)
+
+# Loop creating dataframe with full text and doi's
+for (pdf_file in pdf_paths) {
+  # Extract full text from the PDF
+  text <- pdf_text(pdf_file) %>% paste(collapse = " ") #Combine pages to one string
+  
+  # Extract DOI (filename without the .pdf extension)
+  DOI <- basename(pdf_file) %>% str_replace("\\.pdf$", "")
+  
+  # Append to dataframe
+  df_fulltext <- rbind(df_fulltext, 
+                       data.frame(doi_no_slash = DOI, 
+                                  full_text = text, 
+                                  stringsAsFactors = FALSE))
+ print(pdf_file)
+}
+
+```
+
+## Linking metadata to full text
+
+```{r}
+# Setting working directory to project directory
+setwd("C:/")
+
+# Importing the meta data into a dataframe
+meta_data <- read_excel("metadata_articles.xls")
+
+# Column with doi's without slashes for linking
+meta_data$doi_no_slash <- gsub("/", "", meta_data$DOI)
+
+# Extracting the DOIs from the filenames
+full_data <- meta_data %>%
+  right_join(df_fulltext, by = "doi_no_slash")
+
+# Deleting /n from the full text
+full_data$full_text <- gsub("\n", " ", full_data$full_text)
+
+# Renaming columns
+names(full_data)[names(full_data) == "Article Title"] <- "title"
+names(full_data)[names(full_data) == "Abstract"] <- "abstract"
+```
+
+## List of key-phrases
+
+```{r}
+# Continue with full data rds file here after adding the keywords
+# Keyword definitions
+key_phrases_exact <- c("our simulation",
+                 "our simulations",
+                 "our simulated",
+                 "we simulated",
+                 "we simulate",
+                 "this paper simulates",
+                 "the simulations in this paper",
+                 "simulation was conducted",
+                 "simulations were conducted",
+                 "data was generated",
+                 "data were generated",
+                 "we generated data",
+                 "I generated data",
+                 "monte carlo simulation was", 
+                 "our monte carlo simulation",
+                 "our Monte-Carlo simulation",
+                 "our numerical experiment",
+                 "we conducted a simulation",
+                 "simulation results",
+                 "simulation outcomes",
+                 "simulations were performed",
+                 "performed simulations",
+                 "simulation was performed",
+                 "simulation study was performed",
+                 "performed a simulation",
+                 "simulations were used",
+                 "through simulation, we",
+                 "we conducted a monte carlo simulation",
+                 "we conducted a simulation",
+                 "we conducted monte carlo simulations",
+                 "we conducted simulations",
+                 "simulation conditions for our",
+                 "we selected the simulation",
+                 "we selected simulation",
+                 "simulated conditions",
+                 "simulation conditions",
+                 "design of the simulation",
+                 "were simulated",
+                 "was simulated")
+
+
+key_phrases_gapped <- list(
+  c("we", "simulated"),
+  c("our", "simulation"),
+  c("simulation", "we"),
+  c("simulated", "we"),
+  c("I", "simulated"),
+  c("my", "simulation"),
+  c("simulation", "I"),
+  c("simulated", "I"),
+  c("we", "simulate"),
+  c("we", "generated data"),
+  c("we generated", "data"),
+  c("we conducted", "simulations"),
+  c("we", "conducted simulations"),
+  c("our", "Monte Carlo"),
+  c("we", "Monte Carlo"),
+  c("Monte Carlo", "we"),
+  c("Monte Carlo", "our"),
+  c("simulation", "results"),
+  c("we", "simulation"),
+  c("this study", "simulate"),
+  c("this study", "simulation"),
+  c("simulate", "this study"),
+  c("simulation", "this study"),
+  c("simulation study", "our"),
+  c("simulation study", "we"),
+  c("simulation", "current study"),
+  c("simulations", "current study"),
+  c("current study", "simulation"),
+  c("current study", "simulations"),
+  c("simulations were", "run"),
+  c("simulations", "were run"),
+  c("simulations", "above"),
+  c("simulation", "above"),
+  c("conditions", "simulation"),
+  c("simulation", "conditions"),
+  c("I", "simulate")
+)
+max_gap <- 3  # Fixed number of words allowed between gapped phrases
+```
+
+## Extracting keywords
+
+```{r}
+extract_keyword_context <- function(text, key_phrases_exact, key_phrases_gapped, max_gap) {
+  # Build pattern for exact matches (without inline flags)
+  exact_pattern <- paste0("\\b(", paste(key_phrases_exact, collapse = "|"), ")\\b")
+  
+  # Build regex patterns for keyword pairs allowing up to `max_gap` words between them
+  gapped_patterns <- sapply(key_phrases_gapped, function(pair) {
+    paste0("\\b", pair[1], "\\b(?:\\s+[\\w,\\.\\!\\?]+){0,", max_gap, "}\\s+\\b", pair[2], "\\b")
+  })
+  
+  # Combine the patterns into one large pattern
+  combined_pattern <- paste(c(exact_pattern, gapped_patterns), collapse = "|")
+  
+  # Wrap the combined pattern with regex() to make it case-insensitive
+  combined_pattern <- regex(combined_pattern, ignore_case = TRUE)
+  
+  # Find matches in the text using the case-insensitive pattern
+  matches <- unlist(str_extract_all(text, combined_pattern))
+  
+  if (length(matches) == 0) {
+    return(tibble(keyword = character(0), context = character(0)))
+  }
+  
+  # Split text into sentences (using a lookbehind for punctuation)
+  sentences <- unlist(strsplit(text, "(?<=[.!?])\\s+", perl = TRUE))
+  
+  # For each match, find the sentence(s) that contain the keyword, using case-insensitive detection
+  context_data <- map_dfr(matches, function(match) {
+    # Use regex() with ignore_case to search within sentences
+    idx <- which(str_detect(sentences, regex(match, ignore_case = TRUE)))
+    
+    # For each sentence that contains the match, extract context (previous, current, and next sentence)
+    context_list <- map(idx, function(i) {
+      prev_sentence <- if (i > 1) sentences[i - 1] else NA_character_
+      curr_sentence <- sentences[i]
+      next_sentence <- if (i < length(sentences)) sentences[i + 1] else NA_character_
+      
+      tibble(
+        keyword = match,
+        context = paste(na.omit(c(prev_sentence, curr_sentence, next_sentence)), collapse = " ")
+      )
+    })
+    
+    bind_rows(context_list)
+  })
+  
+  return(context_data)
+}
+
+
+
+# Apply function to each article
+full_data <- full_data %>%
+  mutate(keyword_data = map(full_text, ~extract_keyword_context(.x, key_phrases_exact, key_phrases_gapped, max_gap)))
+```
+
+```{r}
+# Only use to make first file:
+# full_data <- full_data %>%
+#   mutate(included = FALSE, excluded = FALSE, second_reviewer = FALSE, note = "")
+# saveRDS(full_data, file = "all_articles.rds")
+```
+
+## Taking a subset to send for evaluation or evaluate yourself
+
+It is advised not to make too large batches to evaluate in one go because of the computational resources it requires. Up to 400 articles in a batch is workable.
+
+```{r}
+all_articles <- readRDS("C:/")
+
+# Getting a subset ready to send out for evaluation
+df <- all_articles[801:1200,] #fill out the rows that need to be included here!
+
+saveRDS(df, file = "801-1200_reviewername.rds") #after saving put this file in the right folder to send it out to evaluator
+
+```
+
+------------------------------------------------------------------------
+
+# !
+
+\[... use the RUN_ME file to make decisions about articles before going on to the next part!...\]
+
+------------------------------------------------------------------------
+
+## Second Reviewer articles
+
+Once the reviewers have made their decisions, the articles they have doubts about need to be reviewed again.
+
+```{r}
+# Load article batches that contain second reviewer articles into R environment
+decisions1 <- readRDS(
+  "C://201-400_Reviewername.rds")
+
+decisions2 <- readRDS(
+  "C:/")
+
+decisions3 <- readRDS(
+  "C:/")
+# etc etc
+
+# Add the batches to the all_articles dataframe
+decisions_list <- list(decisions1, decisions2, decisions3)
+
+for (d in decisions_list) {
+  all_articles <- rows_update(all_articles, d, by = "doi_no_slash")
+}
+
+# Now, the initial choices are added to the main file. The articles needing second review will be selected from there and will later be overwritten with the final choice after that has been made.
+
+# Make new dataframe that contains all articles that need a second review
+evaluate_again <- all_articles %>%
+  filter(second_reviewer == TRUE)
+
+# Save the dataframe as an rds file
+saveRDS(evaluate_again, file = "second_review_0001-2324.rds")
+
+```
+
+## After the Article Decisions are made
+
+```{r}
+# First add the original decision file per reviewer. Then do it again for the second reviewer articles so these rows get overwritten with the newest information.
+
+# To add the decisions to the large file
+all_articles <- readRDS(
+  "C:/Systematic Review/Systematic_Review_Automation/all_articles.rds")
+
+# Make objects from the decisions here, for example:
+decisions <- readRDS("C://second_review_0001-2324.rds")
+
+# The newly evaluated articles are now updated with the final evaluations.
+all_articles <- all_articles %>%
+  rows_update(decisions, by = "doi_no_slash")
+
+# After all decisions are added to the main file, save the file:
+saveRDS(all_articles, file = "all_articles.rds")
+
+# Remove keyword data for transformation to Excel because Excel cannot deal with these large cells and dataframes within dataframes. In this case this were column 74 and 75, but depending on the data can be different columns.
+save_articles <- all_articles[,-c(74, 75)]
+
+# Save as Excel file if needed
+write_xlsx(save_articles, "all_articles_finaldecisions.xlsx")
+```

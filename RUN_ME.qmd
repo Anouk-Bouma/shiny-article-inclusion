@@ -1,0 +1,295 @@
+---
+title: "RUN_ME"
+author: "Anouk Bouma"
+format: html
+editor: visual
+---
+
+## Run Shiny App
+
+To run the Shiny app, the file needs to be prepared using the document 'Systematic_review_pipeline.qmd. The filename that you used for the batch of articles that needs to be evaluated needs to be filled out at the top of the next codeblock:
+
+```{r}
+# Define path for loading and saving data
+data_file <- "801-1200_reviewername.rds"
+
+library(shiny)
+library(dplyr)
+library(stringr)
+library(purrr)
+
+abstract_phrases <- c("simulate", 
+                      "simulated", 
+                      "simulation", 
+                      "simulating", 
+                      "monte carlo",
+                      "monte-carlo",
+                      "simulations",
+                      "numerical experiment",
+                      "numerical experiments")
+
+
+# Load data (replace with your actual data loading code)
+if (file.exists(data_file)) {
+  input_data <- readRDS(data_file)
+} else {
+  stop("Data file not found. Please ensure evaluation file exists.")
+}
+
+# -------------------------------
+# 1. UI with a fixed navigation panel (with two rows) and centered content
+# -------------------------------
+ui <- fluidPage(
+  titlePanel("Systematic Review Article Screening"),
+  
+  fixedPanel(
+    top = 0, left = 0, right = 0, height = "140px",
+    style = "background-color: white; z-index: 1000; padding: 10px; border-bottom: 1px solid #ccc;",
+    
+    # First row: header
+    fluidRow(
+      column(12, h4("Export Inclusion Decisions"))
+    ),
+    
+    # Second row: navigation controls
+    fluidRow(
+      column(2, actionButton("prev_page", "Previous Page")),
+      column(2, actionButton("next_page", "Next Page")),
+      column(2, actionButton("next_unscreened", "Next Unscreened")),
+      column(2, actionButton("save_inputs", "Save")),
+      column(2, numericInput("jump_page", "Jump to page:", 
+                               value = 1, min = 1, step = 1, width = "80px")),
+      column(2, actionButton("go_page", "Go"))
+    ),
+    
+    # Third row: current page info
+    fluidRow(
+      column(12, textOutput("page_info"))
+    )
+  ),
+  
+  # Main content with top margin so it doesn't get hidden under the fixed panel.
+  tags$div(
+    style = "margin-top: 150px; margin-left: auto; margin-right: auto; padding-left: 20px; padding-right: 20px; max-width: 900px;",
+    uiOutput("article_reports")
+  )
+)
+
+# -------------------------------
+# 2. Server with “start where I left off” functionality, manual saving, and page jump
+# -------------------------------
+server <- function(input, output, session) {
+  articles_per_page <- 1
+  
+  # Create reactive values to store the data and the current page.
+  inclusion_decisions <- reactiveValues(
+    data = input_data,
+    current_page = 1  # default; will update below
+  )
+  
+  # Set the starting page to the page that has the first incomplete article.
+  # An incomplete article is defined as one where none of the checkboxes
+  # (included, excluded, second_reviewer) are checked and no note is entered.
+  {
+    incomplete <- which(
+      (!input_data$included) &
+      (!input_data$excluded) &
+      (!input_data$second_reviewer) #&
+      #(is.na(input_data$note) | input_data$note == "")
+    )
+    if (length(incomplete) > 0) {
+      first_incomplete <- min(incomplete)
+      inclusion_decisions$current_page <- ceiling(first_incomplete / articles_per_page)
+    } else {
+      inclusion_decisions$current_page <- 1
+    }
+  }
+  
+  # Compute total number of pages
+  total_pages <- reactive({
+    n_articles <- nrow(inclusion_decisions$data)
+    ceiling(n_articles / articles_per_page)
+  })
+  
+  # Observers to update the current page when the navigation buttons are clicked.
+  observeEvent(input$next_page, {
+    if (inclusion_decisions$current_page < total_pages()) {
+      inclusion_decisions$current_page <- inclusion_decisions$current_page + 1
+    }
+  })
+  
+  observeEvent(input$next_unscreened, {
+  articles <- inclusion_decisions$data
+
+  # Loop through articles starting from the current page + 1
+  start_index <- inclusion_decisions$current_page * articles_per_page + 1
+  next_unscreened <- which(
+    (!articles$included) &
+    (!articles$excluded) &
+    (!articles$second_reviewer) #&
+    #(is.na(articles$note) | articles$note == "")
+  )
+  
+  # Find the first incomplete article after the current one
+  next_index <- next_unscreened[next_unscreened >= start_index][1]
+  
+  if (!is.na(next_index)) {
+    inclusion_decisions$current_page <- ceiling(next_index / articles_per_page)
+  } else {
+    showNotification("No more unscreened articles found.", type = "message")
+  }
+})
+  
+  
+  observeEvent(input$prev_page, {
+    if (inclusion_decisions$current_page > 1) {
+      inclusion_decisions$current_page <- inclusion_decisions$current_page - 1
+    }
+  })
+  
+  # Observer for the "Go" button to jump to a specified page.
+  observeEvent(input$go_page, {
+    req(input$jump_page)
+    new_page <- as.integer(input$jump_page)
+    if (new_page >= 1 && new_page <= total_pages()) {
+      inclusion_decisions$current_page <- new_page
+    } else {
+      showNotification("Invalid page number", type = "error")
+    }
+  })
+  
+  # Update the numeric input so it reflects the current page.
+  observe({
+    updateNumericInput(session, "jump_page", 
+                         value = inclusion_decisions$current_page,
+                         min = 1, max = total_pages())
+  })
+  
+  # Display current page information.
+  output$page_info <- renderText({
+    paste("Page", inclusion_decisions$current_page, "of", total_pages())
+  })
+  
+  # Render the articles for the current page.
+  output$article_reports <- renderUI({
+    articles <- inclusion_decisions$data
+    current_page <- inclusion_decisions$current_page
+    
+    # Compute the start and end indices for the current page.
+    start_index <- (current_page - 1) * articles_per_page + 1
+    end_index <- min(nrow(articles), start_index + articles_per_page - 1)
+    current_articles <- articles[start_index:end_index, ]
+    
+    # Build UI for each article in the current subset.
+    lapply(seq_len(nrow(current_articles)), function(i) {
+      global_index <- start_index + i - 1
+      article <- current_articles[i, ]
+      keyword_df <- article$keyword_data[[1]]
+      
+      # Bold abstract keywords by replacing the abstract phrases.
+      bold_abstract <- article$abstract
+      for (kw in abstract_phrases) {
+        pattern <- paste0("\\b", kw, "\\b")
+        bold_abstract <- str_replace_all(bold_abstract,
+                                         regex(pattern, ignore_case = TRUE),
+                                         paste0("<strong>", kw, "</strong>"))
+      }
+      
+      tagList(
+        h3(article$title),
+        p(
+          strong("DOI Link: "),
+          tags$a(
+            href = article$`DOI Link`,
+            target = "_blank",
+            article$`DOI Link`
+          )
+        ),
+        p(strong("DOI:"), article$DOI),
+        h4("Abstract"),
+        p(HTML(bold_abstract)),  # Render HTML for bold formatting
+        
+        # Display keyword matches if available, or a message otherwise.
+        if (!is.null(keyword_df) && nrow(keyword_df) > 0) {
+          tagList(
+            h4("Keyword Matches"),
+            lapply(unique(keyword_df$keyword), function(kw) {
+              contexts <- keyword_df$context[keyword_df$keyword == kw]
+              tagList(
+                h4(kw),
+                tags$ul(
+                  lapply(contexts, function(context) {
+                    tags$li(HTML(str_replace_all(context,
+                                                  fixed(kw),
+                                                  paste0("<strong>", kw, "</strong>"))))
+                  })
+                )
+              )
+            })
+          )
+        } else {
+          h4(HTML("<span style='font-size: 18px; font-weight: bold; font-style: italic;'> No Keywords found for this article. </span>"))
+        },
+        
+        # Checkboxes for decisions (using a global index for input IDs)
+        checkboxInput(paste0("include_", global_index), "Include in review", article$included),
+        checkboxInput(paste0("exclude_", global_index), "Exclude from review", article$excluded),
+        checkboxInput(paste0("second_reviewer_", global_index), "Second reviewer", article$second_reviewer),
+        
+        # Text area for notes
+        textAreaInput(
+          inputId = paste0("note_", global_index),
+          label = "Notes:",
+          value = article$note,
+          width = "100%",
+          rows = 10
+        ),
+        
+        hr()
+      )
+    })
+  })
+  
+  # Observer to update and save decisions/notes when the user navigates pages.
+  observeEvent(c(input$next_page, input$prev_page), {
+    articles <- inclusion_decisions$data
+    # Loop through all articles to update if an input exists.
+    for (i in seq_len(nrow(articles))) {
+      if (!is.null(input[[paste0("include_", i)]]))
+        articles$included[i] <- input[[paste0("include_", i)]]
+      if (!is.null(input[[paste0("exclude_", i)]]))
+        articles$excluded[i] <- input[[paste0("exclude_", i)]]
+      if (!is.null(input[[paste0("second_reviewer_", i)]]))
+        articles$second_reviewer[i] <- input[[paste0("second_reviewer_", i)]]
+      if (!is.null(input[[paste0("note_", i)]]))
+        articles$note[i] <- input[[paste0("note_", i)]]
+    }
+    inclusion_decisions$data <- articles
+    saveRDS(inclusion_decisions$data, data_file)
+  })
+  
+  # Observer for the Save button.
+  observeEvent(input$save_inputs, {
+    articles <- inclusion_decisions$data
+    # Loop through all articles to update if an input exists.
+    for (i in seq_len(nrow(articles))) {
+      if (!is.null(input[[paste0("include_", i)]]))
+        articles$included[i] <- input[[paste0("include_", i)]]
+      if (!is.null(input[[paste0("exclude_", i)]]))
+        articles$excluded[i] <- input[[paste0("exclude_", i)]]
+      if (!is.null(input[[paste0("second_reviewer_", i)]]))
+        articles$second_reviewer[i] <- input[[paste0("second_reviewer_", i)]]
+      if (!is.null(input[[paste0("note_", i)]]))
+        articles$note[i] <- input[[paste0("note_", i)]]
+    }
+    inclusion_decisions$data <- articles
+    saveRDS(inclusion_decisions$data, data_file)
+    showNotification("Inputs saved!", type = "message")
+  })
+}
+
+shinyApp(ui = ui, server = server)
+
+
+
+```
